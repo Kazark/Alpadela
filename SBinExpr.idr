@@ -50,6 +50,12 @@ controlChar Term = '\ETX'
 -- Quote mark for strings/blobs in binary S-expressions
 controlChar Quote = '\SOH'
 
+controlCharMap : List (Char, ControlChar)
+controlCharMap = map (\c => (controlChar c, c)) [Delim, Init, Term, Quote]
+
+parseCC : Char -> Maybe ControlChar
+parseCC c = lookup c controlCharMap
+
 Show ControlChar where
   show = singleton . controlChar
 
@@ -67,18 +73,32 @@ quote = show Quote
 
 data SBEParseError
   = EmptySExprIllegal
+  | TopLvlExprLackingParens
+  | UnexpectedControlChar ControlChar
 
 parse : String -> Either SBEParseError SBinExpr
+parse = parseTopLvl . unpack where
+  parseTopLvl : List Char -> Either SBEParseError SBinExpr
+  parseTopLvl [] = Left EmptySExprIllegal
+  parseTopLvl (x :: xs) =
+    case parseCC x of
+      Nothing =>
+        case xs of
+          [] => Right $ Atom x
+          _ :: _ => Left TopLvlExprLackingParens
+      Just Quote => ?read_to_end_quote
+      Just Init => ?read_list
+      Just cc => Left $ UnexpectedControlChar cc
 
 data PrintEr
   = ControlCharInAtom ControlChar
   | QuoteInBlob
 
 private printSBE' : SBinExpr -> Either PrintEr String
--- TODO block use of \x00 - \x03 in Atoms; currently that would not be
--- stopped, and would corrupt the serialized data
-printSBE' (Atom x) = pure $ singleton x
--- TODO reconsider whether to error rather than stripping it out
+printSBE' (Atom x) =
+  case parseCC x of
+    Just c => Left $ ControlCharInAtom c
+    Nothing => Right $ singleton x
 printSBE' (Blob s) =
   if isInfixOf quote s
   then Left QuoteInBlob
@@ -93,9 +113,9 @@ printSBE' (Bare x y) = do
   pure $ x' ++ delim ++ y'
 
 printSBE : SBinExpr -> Either PrintEr String
--- Ensure parenthesis at the top level; or make parse tolerate to lacking
--- top-level parenthesis? In which case, do we want to optimize the other way,
--- and drop them?
+-- Ensure parenthesis at the top level; if we were to permit lacking parenthesis
+-- at the top, the parse would be much less simple. Saving two bytes is not
+-- worth the complexity.
 printSBE (Bare x y) = printSBE' (Pair x y)
 printSBE x = printSBE' x
 
