@@ -73,20 +73,24 @@ quote = show Quote
 
 data SBEParseError
   = EmptySExprIllegal
-  | TopLvlExprLackingParens
+  | TopLvlExprMalformed
   | UnexpectedControlChar ControlChar
+  | UnterminatedBlob
+  | TrailingBytes
 
 parse : String -> Either SBEParseError SBinExpr
-parse = parseTopLvl . unpack where
-  parseTopLvl : List Char -> Either SBEParseError SBinExpr
-  parseTopLvl [] = Left EmptySExprIllegal
-  parseTopLvl (x :: xs) =
+parse x = parseTopLvl $ strM x where
+  parseTopLvl : StrM s -> Either SBEParseError SBinExpr
+  parseTopLvl StrNil = Left EmptySExprIllegal
+  parseTopLvl (StrCons x xs) =
     case parseCC x of
-      Nothing =>
-        case xs of
-          [] => Right $ Atom x
-          _ :: _ => Left TopLvlExprLackingParens
-      Just Quote => ?read_to_end_quote
+      Nothing => if xs == "" then Right $ Atom x else Left TopLvlExprMalformed
+      Just Quote =>
+        let (one, two) = break (== (controlChar Quote)) xs in
+        case strM two of
+          StrNil => Left UnterminatedBlob
+          (StrCons _ "") => Right (Blob one)
+          (StrCons _ _) => Left TrailingBytes
       Just Init => ?read_list
       Just cc => Left $ UnexpectedControlChar cc
 
