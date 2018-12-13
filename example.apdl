@@ -1,0 +1,49 @@
+-- Syntax should be somewhat familiar to those used to Idris, Haskell, or
+-- PureScript, etc., and should not be excessively difficult for anyone to
+-- understand if they are familiar with algebraic data types.
+
+-- All types must either be defined, be primitive, or be declared in this
+-- format; you can't just use a type we don't know about. They must declare
+-- whether they are to serialize as an atom, a string, or as a list.
+abstract atom RockPaperScissors
+abstract string PathName
+-- Imagine that a Subpath is essentially a newtype on a list of `PathName`;
+-- then it makes sense to serialize it this way.
+abstract list Subpath
+-- Or perhaps we ought not to make it abstract; e.g.
+newtype Subpath2 = MkSubpath2 (List PathName)
+-- We do not allow values and types to have the same name. If for some crazy
+-- reason we ever introduced dependent types, this would be important. And in
+-- the meantime, it doesn't really do any harm in the absence of that.
+
+{- We support both styles of Haskell comments -}
+
+-- It's nice how F# allows you to do both `=` and `|` if you have wrapped to a
+-- new line.
+data Or a b =
+  | InL a
+  | InR b
+
+-- OTOH we should support the Idris/Haskell way too; why not?
+data Option a
+  = None
+  | Some a
+
+abstract atom Float
+-- If you need a product type, you can do this:
+data Point = MkPoint Float Float
+
+-- We want to support algebraic data types, because the point here is to make
+-- it easy and fast for processes written in different languages to communicate
+-- in a strongly typed way, but I don't much care about languages without ADTs.
+-- However, sadly GADTs are not always available to us in the target language,
+-- when they are _so_ useful for defining request-response. Therefore we have a
+-- special syntax for request types, rather than supporting GADTs here, (but
+-- effectively doing so, up to what is needed for request/response encodings)
+-- attempting to not imply what the encoding will be in the target language.
+abstract data Name
+request KidQuestions =
+  | WhatsYourName response Name
+  | HowOldAreYou Name response Int
+  | DoYouLikeToRead response Bool
+
