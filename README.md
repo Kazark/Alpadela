@@ -67,11 +67,11 @@ See [the examples](example.apdl) and their comments for more information.
 * How should we handle tuples?
 * Should we support record types? If so, Idris-inspired syntax would be nice:
   
-    record Point =
-      x : Float
-      y : Float
+      record Point =
+        x : Float
+        y : Float
 
 * A fundamental thing we need to grapple with is whether the serialization is
   32-bit or 64-bit.
-* What about having Float / Double as a `Prelude` type?
+* What about having `Float` / `Double` as a `Prelude` type?
 
