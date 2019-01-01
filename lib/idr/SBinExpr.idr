@@ -2,23 +2,20 @@
 ||| algebraic data types to what I call "binary S-Expressions". They are like
 ||| S-Expressions, but use binary characters instead of parentheses and spaces.
 ||| Atoms are machine words, minus binary \x00 - \x03, which we reserve; strings
-||| are also supported (or really, binary blobs). Type information is not
+||| (or really, binary blobs) are also supported. Type information is not
 ||| carried in the serialization; it is assumed that all parties have previously
 ||| agreed on the type and are in sync concerning the (de)serialization
 ||| mechanism.
 |||
 ||| In the binary form we substitute \x00 <NUL> for space, \x01 <SOH> for
 ||| double-quote, \x02 <STX> for left parenthesis, \x03 <ETX> for right
-||| parenthesis. Rather than quoting, <SOH> is results in an error for blobs for
-||| simplicity and speed. Quoting requires unquoting; dropping is a performance
-||| hit only on one side. Though the format itself is encoded in binary, really
-||| we are not focused on transmitting binary data. We could of course quote
-||| \x01 by doubling it or some such, but we are more interested in speed than
-||| flexibility in this case. If we do need to send binary data, we could
-||| probably trade off a bit of performance in that specific case with a bit of
-||| bit-remapping as a means of escaping, unless your binary data really cannot
-||| be limited by even a single bit. In that case perhaps the protocol should
-||| have an option to quote.
+||| parenthesis. Rather than quoting, <SOH> results in an error if it occurs in
+||| blobs, for simplicity and speed. Quoting requires unquoting; dropping is a
+||| performance hit only on one side. Though the format itself is encoded in
+||| binary, we are not focused on transmitting binary data. We could of course
+||| quote \x01 by doubling it or some such, but we are more interested in speed
+||| than flexibility in this case. If we do need to send binary data, you can do
+||| the escaping at an application level.
 |||
 ||| We inject the word "binary" into the middle of the sentence rather than the
 ||| beginning for propriety's sake if you are one of those people who likes to
@@ -35,7 +32,9 @@ data SBinExpr
   = Atom Char
   | Blob String
   | Pair SBinExpr SBinExpr
-  -- Like Pair, but does allows dropping the parens
+  -- Like Pair, but does allow dropping the parens. When printing, if the
+  -- top-level is `Bare`, this is technically malformed, and should be formatted
+  -- as if it were `Pair`. A parser should never spit out a top-level `Bare`.
   | Bare SBinExpr SBinExpr
 
 data ControlChar = Delim | Init | Term | Quote
@@ -76,23 +75,62 @@ data SBEParseError
   | TopLvlExprMalformed
   | UnexpectedControlChar ControlChar
   | UnterminatedBlob
+  | UnterminatedList
   | TrailingBytes
 
+data BrokenSnd : List a -> Type where
+  EmptySnd : BrokenSnd []
+  -- Perhaps a bit of a misnomer, for l itself can be empty
+  NonESnd : (l : List a) -> Smaller l (x :: xs) -> BrokenSnd (x :: xs)
+
+consBrokenSnd : (x : a) -> BrokenSnd xs -> BrokenSnd (x :: xs)
+consBrokenSnd _ EmptySnd = NonESnd [] (LTESucc LTEZero)
+consBrokenSnd _ (NonESnd l z) = NonESnd l (lteSuccRight z)
+
+tailSmaller : (x : a) -> (xs : List a) -> Smaller xs (x :: xs)
+tailSmaller x [] = LTESucc LTEZero
+tailSmaller x (y :: xs) = LTESucc $ tailSmaller y xs
+
+break' : (a -> Bool) -> (l : List a) -> (List a, BrokenSnd l)
+break' _ []      = ([], EmptySnd)
+break' p (x::xs) =
+  if p x
+  then ([], NonESnd xs $ tailSmaller x xs)
+  else let (ys, zs) = break' p xs in (x::ys, consBrokenSnd x zs)
+
+parseBlob : (x : List Char)
+          -> Either SBEParseError (SBinExpr, (y : List Char ** Smaller x y))
+parseBlob x =
+  let (one, two) = break' (== (controlChar Quote)) x in
+  case two of
+    EmptySnd => Left UnterminatedBlob
+    (NonESnd xs prf) => Right (Blob $ pack one, (xs ** prf))
+
+||| Because of Idris' odd relation to strings, we parse from Haskell strings,
+||| but print to C-strings.
 parse : String -> Either SBEParseError SBinExpr
-parse x = parseTopLvl $ strM x where
-  parseTopLvl : StrM s -> Either SBEParseError SBinExpr
-  parseTopLvl StrNil = Left EmptySExprIllegal
-  parseTopLvl (StrCons x xs) =
-    case parseCC x of
-      Nothing => if xs == "" then Right $ Atom x else Left TopLvlExprMalformed
-      Just Quote =>
-        let (one, two) = break (== (controlChar Quote)) xs in
-        case strM two of
-          StrNil => Left UnterminatedBlob
-          (StrCons _ "") => Right (Blob one)
-          (StrCons _ _) => Left TrailingBytes
-      Just Init => ?read_list
-      Just cc => Left $ UnexpectedControlChar cc
+parse = parseTopLvl . unpack where
+  mutual
+    parseTopLvl : List Char -> Either SBEParseError SBinExpr
+    parseTopLvl [] = Left EmptySExprIllegal
+    parseTopLvl (x :: xs) =
+      case parseCC x of
+        Nothing => if xs == [] then Right $ Atom x else Left TopLvlExprMalformed
+        Just Quote =>
+          case parseBlob xs of
+            Left e => Left e
+            Right (expr, ([] ** _)) => Right expr
+            Right _ => Left UnterminatedBlob
+        Just Init => parseList xs
+        Just cc => Left $ UnexpectedControlChar cc
+    parseList : List Char -> Either SBEParseError SBinExpr
+    parseList [] = Left UnterminatedList
+    parseList (x :: xs) =
+      case parseCC x of
+        Nothing => ?howling
+        Just Quote => ?busted
+        Just Init => ?fog
+        Just cc => Left $ UnexpectedControlChar cc
 
 data PrintEr
   = ControlCharInAtom ControlChar
