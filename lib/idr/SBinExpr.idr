@@ -76,7 +76,10 @@ data SBEParseError
   | UnexpectedControlChar ControlChar
   | UnterminatedBlob
   | UnterminatedList
-  | TrailingBytes
+  | MissingDeliminator
+  | TrailingBytes (l : List Char ** NonEmpty l)
+  | MissingSecond
+  | MalformedPair
 
 data BrokenSnd : List a -> Type where
   EmptySnd : BrokenSnd []
@@ -98,38 +101,105 @@ break' p (x::xs) =
   then ([], NonESnd xs $ tailSmaller x xs)
   else let (ys, zs) = break' p xs in (x::ys, consBrokenSnd x zs)
 
-parseBlob : (x : List Char)
-          -> Either SBEParseError (SBinExpr, (y : List Char ** Smaller x y))
+||| The result of a parse
+PResult : List Char -> Type -> Type
+PResult x a = Either SBEParseError (a, (y : List Char ** Smaller y x))
+
+||| A quotataion marker has already been encountered (and is not included in the
+||| input string). Parse until a matching quotation marker is encountered.
+parseBlob : (x : List Char) -> PResult x SBinExpr
 parseBlob x =
   let (one, two) = break' (== (controlChar Quote)) x in
   case two of
     EmptySnd => Left UnterminatedBlob
     (NonESnd xs prf) => Right (Blob $ pack one, (xs ** prf))
 
-||| Because of Idris' odd relation to strings, we parse from Haskell strings,
-||| but print to C-strings.
+||| Parse out a terminator
+parseTerm : (x : List Char) -> PResult x ()
+parseTerm [] = Left MalformedPair
+parseTerm (x :: xs) =
+  case parseCC x of
+    Just Term => Right ((), (xs ** lteRefl))
+    _ => Left UnterminatedList
+
+||| Because of their beautiful relationship to recursion and thus to Idris'
+||| totality checker, we parse from Haskell strings; even though Idris' base
+||| string type is primitive. However, since when we print we are recursing on
+||| the AST, we go straight to primitive Idris strings.
+partial
 parse : String -> Either SBEParseError SBinExpr
 parse = parseTopLvl . unpack where
   mutual
+    ||| Parse a top-level expresion
+    partial
     parseTopLvl : List Char -> Either SBEParseError SBinExpr
     parseTopLvl [] = Left EmptySExprIllegal
     parseTopLvl (x :: xs) =
       case parseCC x of
         Nothing => if xs == [] then Right $ Atom x else Left TopLvlExprMalformed
-        Just Quote =>
-          case parseBlob xs of
-            Left e => Left e
-            Right (expr, ([] ** _)) => Right expr
-            Right _ => Left UnterminatedBlob
-        Just Init => parseList xs
+        Just Quote => do
+          blob <- parseBlob xs
+          case blob of
+            (expr, ([] ** _)) => pure expr
+            _ => Left UnterminatedBlob
+        Just Init => do
+          (expr, (rem ** _)) <- parseList xs
+          case rem of
+            [] => Right expr
+            (x' :: xs') => Left $ TrailingBytes (x' :: xs' ** IsNonEmpty)
         Just cc => Left $ UnexpectedControlChar cc
-    parseList : List Char -> Either SBEParseError SBinExpr
+
+    ||| A pair/list inititializer/"open parenthesis" has already been
+    ||| encountered (and is not included in the input string). Parse until
+    ||| a matching pair/list terminator/"close parentheiss" is encountered.
+    partial
+    parseList : (x : List Char) -> PResult x SBinExpr
     parseList [] = Left UnterminatedList
-    parseList (x :: xs) =
+    parseList (x :: xs) = do
+      (exprs, (rem ** prf)) <- parseInnerList (x :: xs)
+      ((), (rem' ** prf')) <- parseTerm rem
+      case exprs of
+        (expr1 :: expr2 :: exprs') =>
+          let prf'' = lteTransitive prf' (lteSuccLeft prf)
+          in Right (foldl Bare expr2 exprs', (rem' ** prf''))
+        _ => Left MalformedPair
+
+    ||| Parse out a "list", but without caring about parenthesis, only minding
+    ||| deliminators.
+    partial
+    parseInnerList : (x : List Char) -> {auto prf : NonEmpty x}
+                   -> PResult x (List SBinExpr)
+    parseInnerList (x :: xs) = do
+      (expr, (rem ** prf)) <- parseOne (x :: xs)
+      case rem of
+        -- Because we are not here parsing a top-level expression (an inner list
+        -- will always be parentheized on the outside) to run out of characters
+        -- here is to fail to terminate a list.
+        [] => Left UnterminatedList
+        (x' :: xs') =>
+          case parseCC x' of
+            Nothing => Left MissingSecond
+            Just Term => pure ([expr], ((x' :: xs') ** prf))
+            Just Delim =>
+              case xs' of
+                [] => Left MissingSecond
+                (x'' :: xs'') => do
+                  (exprs, (rem' ** prf')) <- parseInnerList (x'' :: xs'')
+                  let prf'' = lteSuccRight $ lteSuccRight prf'
+                  pure (expr :: exprs, (rem' ** lteTransitive prf'' prf))
+            Just cc => Left $ UnexpectedControlChar cc
+
+    partial
+    parseOne : (x : List Char) -> {auto prf : NonEmpty x} -> PResult x SBinExpr
+    parseOne (x :: xs) =
       case parseCC x of
-        Nothing => ?howling
-        Just Quote => ?busted
-        Just Init => ?fog
+        Nothing => Right (Atom x, (xs ** lteRefl))
+        Just Quote => do
+          (expr, (rem ** prf)) <- parseBlob xs
+          pure (expr, (rem ** lteSuccRight prf))
+        Just Init => do
+          (expr, (rem ** prf)) <- parseList xs
+          pure (expr, (rem ** lteSuccRight prf))
         Just cc => Left $ UnexpectedControlChar cc
 
 data PrintEr
