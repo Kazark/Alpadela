@@ -154,9 +154,8 @@ parse = parseTopLvl . unpack where
     ||| a matching pair/list terminator/"close parentheiss" is encountered.
     partial
     parseList : (x : List Char) -> PResult x SBinExpr
-    parseList [] = Left UnterminatedList
-    parseList (x :: xs) = do
-      (exprs, (rem ** prf)) <- parseInnerList (x :: xs)
+    parseList x = do
+      (exprs, (rem ** prf)) <- parseInnerList x
       ((), (rem' ** prf')) <- parseTerm rem
       case exprs of
         (expr1 :: expr2 :: exprs') =>
@@ -167,30 +166,31 @@ parse = parseTopLvl . unpack where
     ||| Parse out a "list", but without caring about parenthesis, only minding
     ||| deliminators.
     partial
-    parseInnerList : (x : List Char) -> {auto prf : NonEmpty x}
-                   -> PResult x (List SBinExpr)
-    parseInnerList (x :: xs) = do
-      (expr, (rem ** prf)) <- parseOne (x :: xs)
-      case rem of
-        -- Because we are not here parsing a top-level expression (an inner list
-        -- will always be parentheized on the outside) to run out of characters
-        -- here is to fail to terminate a list.
-        [] => Left UnterminatedList
-        (x' :: xs') =>
-          case parseCC x' of
-            Nothing => Left MissingSecond
-            Just Term => pure ([expr], ((x' :: xs') ** prf))
-            Just Delim =>
-              case xs' of
-                [] => Left MissingSecond
-                (x'' :: xs'') => do
-                  (exprs, (rem' ** prf')) <- parseInnerList (x'' :: xs'')
-                  let prf'' = lteSuccRight $ lteSuccRight prf'
-                  pure (expr :: exprs, (rem' ** lteTransitive prf'' prf))
-            Just cc => Left $ UnexpectedControlChar cc
+    parseInnerList : (x : List Char) -> PResult x (List SBinExpr)
+    parseInnerList x =
+      sizeRec step x where
+      step : (x : List Char)
+           -> ((y : List Char) -> Smaller y x -> PResult x (List SBinExpr))
+           -> PResult x (List SBinExpr)
+      step x self = do
+        (expr, (rem ** prf)) <- parseOne x
+        case rem of
+          -- Because we are not here parsing a top-level expression (an inner
+          -- list will always be parentheized on the outside) to run out of
+          -- characters here is to fail to terminate a list.
+          [] => Left UnterminatedList
+          (x' :: xs') =>
+            case parseCC x' of
+              Nothing => Left MissingSecond
+              Just Term => pure ([expr], ((x' :: xs') ** prf))
+              Just Delim => do
+                (exprs, (rem' ** prf')) <- self xs' (lteSuccLeft prf)
+                pure (expr :: exprs, (rem' ** prf'))
+              Just cc => Left $ UnexpectedControlChar cc
 
     partial
-    parseOne : (x : List Char) -> {auto prf : NonEmpty x} -> PResult x SBinExpr
+    parseOne : (x : List Char) -> PResult x SBinExpr
+    parseOne [] = Left UnterminatedList
     parseOne (x :: xs) =
       case parseCC x of
         Nothing => Right (Atom x, (xs ** lteRefl))
