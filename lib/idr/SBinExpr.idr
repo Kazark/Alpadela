@@ -257,6 +257,23 @@ interface ToSBinExpr a where
 interface FromSBinExpr a where
   fromSBE : SBinExpr -> Maybe a
 
+serialize : ToSBinExpr a => a -> Either PrintEr String
+serialize = printSBE . toSBE
+
+data DeserialEr
+  = ParseEr SBEParseError
+  | SBinExprDoesntMatchType SBinExpr
+
+partial
+deserialize : FromSBinExpr a => String -> Either DeserialEr a
+deserialize @{constraint} x =
+  case parse x of
+    Left e => Left (ParseEr e)
+    Right sbe =>
+      case fromSBE @{constraint} sbe of
+        Nothing => Left (SBinExprDoesntMatchType sbe)
+        Just x => Right x
+
 ||| This instance is extremely straightforward by desing, as it is assumed that
 ||| strings and types that will want to serialize as strings will predominant,
 ||| and therefore the ability to serialize directly will greatly help
@@ -265,9 +282,6 @@ ToSBinExpr String where
   toSBE = Blob
   -- String, in the abstract, cannot be smashed into a single char
   maybeCompact = Nothing
-
-serialize : ToSBinExpr a => a -> Either PrintEr String
-serialize = printSBE . toSBE
 
 ToSBinExpr Char where
   toSBE = Atom
@@ -286,7 +300,7 @@ ToSBinExpr Bool where
   maybeCompact = Just boolToChar
 
 listToList : (a -> SBinExpr) -> List a -> SBinExpr
-listToList f [] = Atom '\04' -- Nil
+listToList _ [] = Atom '\04' -- Nil
 listToList f (x :: xs) = Pair (f x) (listToList' f xs) where
   listToList' : (a -> SBinExpr) -> List a -> SBinExpr
   listToList' f [] = Atom '\04' -- Nil
@@ -351,4 +365,11 @@ Example7 =
   [ Left "Random example"
   , Right (5, True, '?')
   , Right (0, False, ' ')
+  ]
+
+Example8 : List (Either String (Int, (Bool, Char)))
+Example8 =
+  [ Left "Random example"
+  , Right (5, True, '?')
+  , Right (1337, False, ' ')
   ]
